@@ -1,41 +1,187 @@
 menu "Example Configuration"
 
-    choice EXAMPLE_CERT_VALIDATION
-        prompt "Certificate validation method"
-        default EXAMPLE_CERT_VALIDATE_BUNDLE
+    #
+    # Which interfaces to bring up. Symbol names follow the upstream
+    # protocol_examples_common menu so a reader coming from any other ESP-IDF
+    # example recognises them; that component is not used here because its
+    # example_connect() drives ESP-IDF's own W5500 driver, which is the part the
+    # WIZnet component replaces.
+    #
+    # Enabling both gives failover: whichever interface is up carries the MQTT
+    # session, and losing one moves the session to the other.
+    #
+    config EXAMPLE_CONNECT_ETHERNET
+        bool "connect using Ethernet interface (WIZnet W5500 / W6300)"
+        default y
+
+    config EXAMPLE_CONNECT_WIFI
+        bool "connect using WiFi interface"
+        default y
+
+    if EXAMPLE_CONNECT_WIFI
+        config EXAMPLE_WIFI_SSID
+            string "WiFi SSID"
+            default "myssid"
+            help
+                SSID (network name) for the example to connect to.
+
+        config EXAMPLE_WIFI_PASSWORD
+            string "WiFi Password"
+            default "mypassword"
+            help
+                WiFi password (WPA2) for the example to use.
+
+                The component's Wi-Fi backend requires WPA2-PSK or better; open
+                and WPA-only APs will not associate.
+    endif
+
+    #
+    # Failover priority. Not an upstream symbol: upstream connects exactly one
+    # interface, so it never has to choose.
+    #
+    # Implemented with esp_netif's route_prio, which is what picks the default
+    # netif among those that are up. The IDF defaults are Wi-Fi 100 and Ethernet
+    # 50, i.e. Wi-Fi wins — so preferring Ethernet requires raising it above 100
+    # rather than merely enabling it.
+    #
+    choice EXAMPLE_PRIMARY_INTERFACE
+        prompt "Preferred interface"
+        default EXAMPLE_PRIMARY_ETHERNET
+        depends on EXAMPLE_CONNECT_ETHERNET && EXAMPLE_CONNECT_WIFI
         help
-            Choose how the broker's TLS server certificate is validated.
-            - Certificate bundle (default).
-            - Embedded certificate
+            Which interface carries traffic while both are up. The other one
+            takes over when the preferred one goes down.
 
-        config EXAMPLE_CERT_VALIDATE_BUNDLE
-            bool "Certificate bundle"
+        config EXAMPLE_PRIMARY_ETHERNET
+            bool "Ethernet"
 
-        config EXAMPLE_CERT_VALIDATE_MOSQUITTO_CA
-            bool "Embedded Certificate"
-
+        config EXAMPLE_PRIMARY_WIFI
+            bool "WiFi"
     endchoice
 
+    #
+    # MQTT settings, as in the upstream ESP-IDF mqtt example.
+    #
     config EXAMPLE_MQTT_BROKER_URI
         string "MQTT broker URI"
-        default "mqtts://test.mosquitto.org:8886"
-        default "mqtts://test.mosquitto.org:8883" if EXAMPLE_CERT_VALIDATE_MOSQUITTO_CA
+        default "mqtt://192.168.11.100:1883"
         help
-            URI to the MQTT broker.
-            When using the example broker the port must be set to 8883 if testing
-            embedded certificate
+            URI of the MQTT broker. The scheme selects the transport:
+              mqtt://   plain TCP  (default port 1883)
+              mqtts://  TLS        (default port 8883)
+              ws:// / wss://       MQTT over WebSocket
 
-    config EXAMPLE_BROKER_CERTIFICATE_OVERRIDE
-        string "Broker certificate override (PEM body)"
-        default ""
+            For failover to mean anything the broker must be reachable over BOTH
+            interfaces. A hostname only resolves if a DNS server is reachable.
+
+    config EXAMPLE_MQTT_USE_TLS
+        bool "Use TLS (attach the certificate bundle)"
+        default n
+        select MBEDTLS_CERTIFICATE_BUNDLE
         help
-            Optional: override server certificate by embedding a PEM constructed
-            from this base64 body. Leave empty to use the certificate bundle or the
-            embedded Mosquitto CA. Provide only the base64 payload without the
-            BEGIN/END markers.
+            Verify the broker with ESP-IDF's built-in certificate bundle, as the
+            upstream example does. Only meaningful with an mqtts:// or wss:// URI.
 
-    config EXAMPLE_BROKER_CERTIFICATE_OVERRIDDEN
-        bool
-        default y if EXAMPLE_BROKER_CERTIFICATE_OVERRIDE != ""
+    #
+    # Liveness. These are what decide how fast a failover happens, so they are
+    # exposed rather than left at the library defaults.
+    #
+    # The interesting case is a link that stays UP while the path behind it dies
+    # (upstream router down, broker host gone, firewall change). No netif event
+    # fires then, so neither the route nor the socket moves on its own — these
+    # timers are the only thing that notices.
+    #
+    config EXAMPLE_MQTT_KEEPALIVE_S
+        int "MQTT keep-alive (seconds)"
+        default 20
+        range 5 300
+        help
+            The client pings at half this interval and gives up at the full
+            interval. ESP-MQTT's own default is 120 s, which means a dead path
+            can go unnoticed for two minutes; 20 s is a demo-friendly value.
+
+    config EXAMPLE_MQTT_PUBLISH_PERIOD_MS
+        int "Publish period (ms), 0 to disable"
+        default 2000
+        range 0 600000
+        help
+            Publishes a numbered message on this interval so a failover is
+            visible as a gap in the sequence at the broker. Each payload names
+            the interface it actually left through, which is the point: the
+            sequence number shows how long the switch took, and the interface
+            name shows that it really switched.
+
+            The upstream example publishes only on subscribe, which cannot show
+            any of that. Set to 0 for upstream behaviour.
+
+    config EXAMPLE_MQTT_RECONNECT_MS
+        int "Reconnect delay (ms)"
+        default 3000
+        range 500 60000
+        help
+            Fixed delay before retrying after a lost connection; there is no
+            backoff. The library default is 10000.
+
+    config EXAMPLE_TCP_KEEPALIVE_ENABLE
+        bool "Enable TCP keep-alive on the broker socket"
+        default y
+        help
+            Detects a dead path from the transport layer, independently of MQTT
+            traffic. Useful because MQTT keep-alive only measures silence from
+            the broker, and a half-open TCP connection can otherwise survive for
+            minutes of retransmission.
+
+    if EXAMPLE_TCP_KEEPALIVE_ENABLE
+        config EXAMPLE_TCP_KEEPALIVE_IDLE_S
+            int "TCP keep-alive idle (seconds)"
+            default 5
+
+        config EXAMPLE_TCP_KEEPALIVE_INTERVAL_S
+            int "TCP keep-alive probe interval (seconds)"
+            default 3
+
+        config EXAMPLE_TCP_KEEPALIVE_COUNT
+            int "TCP keep-alive probe count"
+            default 3
+            help
+                Detection takes roughly idle + interval * count seconds.
+    endif
+
+    #
+    # Network identity for the WIZnet interface.
+    #
+    # Upstream gets its addressing from protocol_examples_common over DHCP. That
+    # helper is replaced here, and wiznet_net_init() takes a wiz_NetInfo: it
+    # needs a MAC (neither chip has one built in) and a static address (the
+    # backend stops the DHCP client unconditionally). Hence these.
+    #
+    # Parsed at startup; a malformed entry is reported by name and stops the boot.
+    #
+    if EXAMPLE_CONNECT_ETHERNET
+        config EXAMPLE_ETH_MAC_ADDR
+            string "Ethernet MAC address"
+            default "00:08:DC:12:34:56"
+            help
+                Six colon-separated hex octets. 00:08:DC is WIZnet's OUI. Must be
+                unique on the segment.
+
+        config EXAMPLE_ETH_IP_ADDR
+            string "Ethernet static IP address"
+            default "192.168.11.2"
+
+        config EXAMPLE_ETH_NETMASK
+            string "Ethernet subnet mask"
+            default "255.255.255.0"
+
+        config EXAMPLE_ETH_GATEWAY
+            string "Ethernet default gateway"
+            default "192.168.11.1"
+
+        config EXAMPLE_ETH_DNS_SERVER
+            string "Ethernet DNS server"
+            default "8.8.8.8"
+            help
+                Only used when the broker URI names a host. Leave empty to set none.
+    endif
 
 endmenu

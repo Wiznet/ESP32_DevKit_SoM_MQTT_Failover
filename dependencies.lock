@@ -1,0 +1,34 @@
+dependencies:
+  espressif/mqtt:
+    component_hash: fb18bc3b65aa8c94693a9811ffc322cca8a65d92d5ec84983d3e385080e3969c
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.0
+  idf:
+    source:
+      type: idf
+    version: 6.0.2
+  wiznet/wsm_driver:
+    component_hash: d6f291aaafb07f7cbc598aafaab7c3734587a41dd066a43322e7ac07663292ea
+    dependencies:
+    - name: idf
+      version: '>=6.0.1'
+    source:
+      git: https://github.com/Wiznet/wsm_driver.git
+      path: .
+      type: git
+    targets:
+    - esp32s3
+    version: 97f6db384f1c73d43e60ab367c6e5893545cfe97
+direct_dependencies:
+- espressif/mqtt
+- idf
+- wiznet/wsm_driver
+manifest_hash: fab1e12e7f3a8a265dce1383b4cc8a44a06b43364bc10ffbeea7c5d2ce8767d4
+target: esp32s3
+version: 3.0.0

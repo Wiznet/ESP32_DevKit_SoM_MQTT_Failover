@@ -4,6 +4,8 @@ cmake_minimum_required(VERSION 3.22)
 
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-# "Trim" the build. Include the minimal set of components, main, and anything it depends on.
-idf_build_set_property(MINIMAL_BUILD ON)
-project(esp-idf_mqtt)
+# NOTE: MINIMAL_BUILD is deliberately NOT set. The wsm_driver TOE backend works
+# by intercepting lwIP's BSD socket entry points with -Wl,--wrap and by leaning
+# on the VFS/newlib close() path; trimming the component graph is an easy way to
+# drop a component those link-time hooks still expect to be present.
+project(mqtt_WIZnet)

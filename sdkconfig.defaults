@@ -1,3 +1,18 @@
-# Enable the built-in certificate bundle for TLS server verification
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# --- wsm_driver ---
+# The esp_eth MACRAW backend is REQUIRED, not a preference: it makes the WIZnet
+# chip a plain SPI Ethernet MAC and leaves TCP/IP to the ESP32's own LwIP, which
+# is what lets the standard ESP-MQTT client run unchanged. The TOE backend runs
+# TCP/IP on the chip and reaches it by wrapping 13 lwip_* symbols; ESP-MQTT also
+# needs getaddrinfo/select/fcntl, which are not wrapped, so it cannot work there.
+# app_main.c has an #error guarding this.
+#
+# Board (and with it the chip and every pin) stays user-selectable in
+#   idf.py menuconfig -> Component config -> WIZnet WSM Driver -> Board
+# and defaults to the ESP32-W5500-Dev-kit.
+CONFIG_WSM_DRIVER_ENABLED=y
+CONFIG_WSM_DRIVER_BACKEND_ETH=y
