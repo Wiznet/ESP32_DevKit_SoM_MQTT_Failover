@@ -11,9 +11,11 @@
    up alongside it so the MQTT session survives losing either one.
 
    The MQTT half below — the event handler and mqtt_app_start() — is the
-   upstream one. On this backend the chip is a plain SPI Ethernet MAC and the
-   ESP32's own LwIP owns TCP/IP, so both interfaces are ordinary esp_netifs and
-   ESP-MQTT runs over them unchanged.
+   upstream one. On the esp_eth MACRAW backend the chip is a plain SPI Ethernet
+   MAC and the ESP32's own LwIP owns TCP/IP, so both interfaces are ordinary
+   esp_netifs and ESP-MQTT runs over them unchanged. On the TOE backend the
+   chip runs its own TCP/IP, and toe_socket_shim.c routes each new MQTT socket
+   to either the chip or the real LwIP (Wi-Fi) — see the notes below.
 
    This example code is in the Public Domain (or CC0 licensed, at your option.)
 
@@ -54,17 +56,19 @@
 #include "esp_crt_bundle.h"
 #endif
 
+#if defined(CONFIG_WSM_DRIVER_SOCKET_WRAP) && CONFIG_WSM_DRIVER_SOCKET_WRAP
+#include "toe_socket_shim.h"    /* toe_shim_eth_link_up / toe_shim_active_route */
+#endif
+
 /*
- * ESP-MQTT needs a real BSD socket API — it reaches LwIP through esp-tls and
- * tcp_transport, which call getaddrinfo(), select() and fcntl(). The TOE backend
- * redirects only 13 lwip_* entry points with -Wl,--wrap and those are not among
- * them, so on TOE the call chain falls through to the software stack midway and
- * loses the connection the chip actually owns. Failover would be worse still:
- * with the wrap active the chip owns every socket, leaving no way for a Wi-Fi
- * socket to exist at all.
+ * Backend rules. On TOE, the fcntl/select the component's --wrap list lacks
+ * and the per-socket Ethernet-or-WiFi routing live in toe_socket_shim.c;
+ * failover is ESP-MQTT reconnecting and the next socket() re-deciding.
+ * Still out of reach there: mqtts:// (read()/write() are unwrappable) and
+ * hostname brokers on the Ethernet route (DNS resolves via real LwIP only).
  */
-#if !defined(CONFIG_WSM_DRIVER_BACKEND_ETH)
-#error "Select Component config -> WIZnet WSM Driver -> Network backend -> esp_eth MACRAW + software LwIP. ESP-MQTT cannot run on the TOE backend."
+#if !defined(CONFIG_WSM_DRIVER_BACKEND_ETH) && CONFIG_EXAMPLE_MQTT_USE_TLS
+#error "TLS is not available on the TOE backend: mbedTLS drives the socket through read()/write(), which the component's --wrap list cannot intercept. Use the esp_eth MACRAW backend for mqtts://."
 #endif
 
 #if !CONFIG_EXAMPLE_CONNECT_ETHERNET && !CONFIG_EXAMPLE_CONNECT_WIFI
@@ -199,28 +203,64 @@ static void nudge_reconnect(const char *why)
     if (s_client == NULL) {
         return;     /* interface event arrived before mqtt_app_start() */
     }
-    ESP_LOGI(TAG, "%s — reconnecting MQTT so it picks the current route", why);
-    /* Asks the client's own task to tear the session down and rebuild it; the
-     * new socket redoes the route lookup. Safe to call when already
-     * disconnected — it just shortens the wait. */
-    esp_mqtt_client_reconnect(s_client);
+    ESP_LOGI(TAG, "%s — cycling the MQTT session so it picks the current route", why);
+    /* reconnect() acts ONLY in WAIT_RECONNECT (shortens the backoff; never
+     * drops a live session); disconnect() is the async teardown request for a
+     * CONNECTED session (-> abort -> WAIT_RECONNECT -> redial). Try the
+     * no-side-effect call first, drop the session only if it refuses. If the
+     * session dies between the calls, DISCONNECT_BIT lingers and costs one
+     * extra reconnect cycle — rare, self-healing. */
+    if (esp_mqtt_client_reconnect(s_client) != ESP_OK) {
+        esp_mqtt_client_disconnect(s_client);
+    }
 }
 
 static void iface_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
 #if CONFIG_EXAMPLE_CONNECT_ETHERNET
+    /* esp_eth backend only — TOE posts no ETH_EVENT; the PHY watcher below
+     * covers that edge. */
     if (base == ETH_EVENT && id == ETHERNET_EVENT_CONNECTED) {
         nudge_reconnect("Ethernet link up");
         return;
     }
 #endif
 #if CONFIG_EXAMPLE_CONNECT_WIFI
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
-        nudge_reconnect("Wi-Fi associated");
+    /* Got-IP, not association: Wi-Fi only counts as usable once it has an
+     * address — a nudge at association would redial inside the DHCP window,
+     * land back on Ethernet, and never retry. */
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        nudge_reconnect("Wi-Fi got IP");
+        return;
+    }
+    /* Fast-failover edge; usually redundant (the dying netif aborts the pcb)
+     * but costs nothing. */
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        nudge_reconnect("Wi-Fi disconnected");
         return;
     }
 #endif
 }
+
+#if defined(CONFIG_WSM_DRIVER_SOCKET_WRAP) && CONFIG_WSM_DRIVER_SOCKET_WRAP \
+    && CONFIG_EXAMPLE_CONNECT_ETHERNET && CONFIG_EXAMPLE_CONNECT_WIFI
+/* TOE stand-in for ETH_EVENT: sample the PHY link at 1 Hz (one mutex-guarded
+ * SPI read) and nudge on both edges — up is the failback, down is the fast
+ * failover (the chip's socket does not error out on carrier loss). */
+static void eth_link_watcher_task(void *arg)
+{
+    bool prev = toe_shim_eth_link_up();
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        bool now = toe_shim_eth_link_up();
+        if (now != prev) {
+            prev = now;
+            nudge_reconnect(now ? "Ethernet PHY link up" : "Ethernet PHY link down");
+        }
+    }
+}
+#endif
 
 /*
  * @brief Event handler registered to receive MQTT events
@@ -311,10 +351,11 @@ static void mqtt_app_start(void)
         },
         .network = {
             .reconnect_timeout_ms = CONFIG_EXAMPLE_MQTT_RECONNECT_MS,
-#if CONFIG_EXAMPLE_TCP_KEEPALIVE_ENABLE
-            /* Transport-level liveness, independent of MQTT traffic: catches a
-             * path that died while the link stayed up, which produces no netif
-             * event and so would otherwise only surface via MQTT keep-alive. */
+#if CONFIG_EXAMPLE_TCP_KEEPALIVE_ENABLE && !defined(CONFIG_WSM_DRIVER_SOCKET_WRAP)
+            /* Transport-level liveness for a path that dies with the link up.
+             * Absent under the TOE wrap: the component rejects TCP_KEEPINTVL/
+             * KEEPCNT, esp-tls treats that as fatal, and every connect would
+             * fail before the SYN — MQTT keep-alive covers liveness there. */
             .tcp_keep_alive_cfg = {
                 .keep_alive_enable   = true,
                 .keep_alive_idle     = CONFIG_EXAMPLE_TCP_KEEPALIVE_IDLE_S,
@@ -359,6 +400,11 @@ static void mqtt_app_start(void)
  * exactly the thing under test. */
 static void describe_route(char *out, size_t len)
 {
+#if defined(CONFIG_WSM_DRIVER_SOCKET_WRAP) && CONFIG_WSM_DRIVER_SOCKET_WRAP
+    /* Under the TOE wrap the shim's per-socket decision — not the default
+     * netif — names the path the bytes really took. */
+    snprintf(out, len, "via=%s", toe_shim_active_route());
+#else
     esp_netif_t *netif = esp_netif_get_default_netif();
     esp_netif_ip_info_t ip;
 
@@ -371,6 +417,7 @@ static void describe_route(char *out, size_t len)
         return;
     }
     snprintf(out, len, "via=%s " IPSTR, esp_netif_get_ifkey(netif), IP2STR(&ip.ip));
+#endif
 }
 
 static void publisher_task(void *arg)
@@ -407,9 +454,17 @@ static void publisher_task(void *arg)
 static bool any_link_up(void)
 {
 #if CONFIG_EXAMPLE_CONNECT_ETHERNET
+#if defined(CONFIG_WSM_DRIVER_SOCKET_WRAP) && CONFIG_WSM_DRIVER_SOCKET_WRAP
+    /* On TOE the PHY link register is the live answer; wiznet_net_is_up()
+     * never goes false after bring-up. */
+    if (toe_shim_eth_link_up()) {
+        return true;
+    }
+#else
     if (wiznet_net_is_up()) {
         return true;
     }
+#endif
 #endif
 #if CONFIG_EXAMPLE_CONNECT_WIFI
     if (wifi_net_is_up()) {
@@ -422,6 +477,9 @@ static bool any_link_up(void)
 static void set_route_priorities(void)
 {
 #if CONFIG_EXAMPLE_CONNECT_ETHERNET && CONFIG_EXAMPLE_CONNECT_WIFI
+    /* Mostly moot under the TOE wrap (the chip bypasses LwIP routing; the
+     * shim decides per socket) but still correct for the Wi-Fi side, and on
+     * the esp_eth backend this IS the failover mechanism. */
     esp_netif_t *eth  = esp_netif_get_handle_from_ifkey("ETH_DEF");
     esp_netif_t *wifi = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
 
@@ -478,6 +536,10 @@ void app_main(void)
 #if CONFIG_EXAMPLE_CONNECT_WIFI
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                iface_event_handler, NULL));
+    /* The Wi-Fi failback edge is got-IP, which arrives on IP_EVENT, not
+     * WIFI_EVENT — without this registration the handler above never hears it. */
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                               iface_event_handler, NULL));
 #endif
 
     ESP_LOGI(TAG, "Waiting for a network link...");
@@ -487,6 +549,14 @@ void app_main(void)
     ESP_LOGI(TAG, "Link is up");
 
     mqtt_app_start();
+
+#if defined(CONFIG_WSM_DRIVER_SOCKET_WRAP) && CONFIG_WSM_DRIVER_SOCKET_WRAP \
+    && CONFIG_EXAMPLE_CONNECT_ETHERNET && CONFIG_EXAMPLE_CONNECT_WIFI
+    /* Started after the client exists for the same reason as the publisher:
+     * nudge_reconnect() is a no-op until s_client is set, and a link edge in
+     * that window would be lost. */
+    xTaskCreate(eth_link_watcher_task, "eth_link", 3072, NULL, 5, NULL);
+#endif
 
 #if CONFIG_EXAMPLE_MQTT_PUBLISH_PERIOD_MS > 0
     /* Started after the client exists so the task never sees s_client == NULL

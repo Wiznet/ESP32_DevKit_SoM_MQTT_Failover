@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"c:/Users/lihan/mqtt_WIZnet/managed_components/wiznet__wsm_driver/third_party/ioLibrary_Driver\" && sed -n '/^void[ ]*wizchip_sw_reset/,/^}/p' Ethernet/wizchip_conf.c | head -50 && echo \"=== 440-470 ctlwizchip ===\" && sed -n '435,470p' Ethernet/wizchip_conf.c)",
+      "Bash(cd \"c:/Users/lihan/mqtt_WIZnet/managed_components/espressif__mqtt\" && sed -n '/^static esp_err_t esp_mqtt_check_cfg_conflict/,/^}/p' mqtt_client.c | head -50)",
+      "Bash(cd \"c:/Users/lihan/mqtt_WIZnet/managed_components/wiznet__wsm_driver/third_party/ioLibrary_Driver\" && sed -n '/^void[ ]*wizchip_sw_reset/,/^}/p' Ethernet/wizchip_conf.c | sed -n '45,70p')",
+      "Bash(cd managed_components/espressif__mqtt && grep -n \"static bool mqtt_enqueue\\\\|static esp_err_t deliver_suback\\\\|static esp_err_t deliver_publish\\\\|saved_msg_topic\\\\b\" mqtt_client.c | head -20; echo \"----MQTT_ENQUEUE----\"; sed -n '/^static bool mqtt_enqueue\\(/,/^}/p' mqtt_client.c)",
+      "Bash(mkdir -p __TRACKED_VAR__/before-standard-rewrite)",
+      "Bash(cp main/mqtt.c main/mqtt.h main/mqtt_esp.c main/app_main.c main/net_config.h main/CMakeLists.txt main/Kconfig.projbuild main/idf_component.yml sdkconfig.defaults README.md __TRACKED_VAR__/before-standard-rewrite/)",
+      "Bash(rm -f main/mqtt.c main/mqtt.h main/mqtt_esp.c)",
+      "Bash(cat)",
+      "Bash(rm -f sdkconfig)",
+      "Bash(rm -rf build/CMakeCache.txt build/CMakeFiles build/esp-idf)",
+      "Bash(cd /c/Users/lihan/mqtt_WIZnet; rm -rf build_toe_test; ls)",
+      "Bash(cd /c/Users/lihan/mqtt_WIZnet *)",
+      "Bash(rm -f main/net_config.h)",
+      "Bash(sed -n '/esp_err_t esp_netif_init\\(void\\)/,/^}/p' lwip/esp_netif_lwip.c)",
+      "Bash(sed -n '/esp_netif_t \\\\*esp_netif_is_active/,/^}/p' esp_netif_objects.c)",
+      "Bash(sed -n '/static esp_err_t esp_netif_set_dns_info_api/,/^}/p' lwip/esp_netif_lwip.c)",
+      "Bash(cd /c/Users/lihan/esp/v5.5.1/esp-idf/components/esp_netif && sed -n '285,310p' lwip/esp_netif_lwip.c; echo \"=== is_active ===\"; grep -rn \"esp_netif_is_active\" --include=*.c --include=*.h . | head; echo \"=== impl ===\"; sed -n '/esp_netif_is_active\\(esp_netif_t \\\\*/,/^}/p' esp_netif_objects.c lwip/esp_netif_objects.c 2>/dev/null | head -30)",
+      "Bash(cd \"c:/Users/lihan/mqtt_WIZnet/managed_components/espressif__mqtt\" && grep -n \"max_poll_timeout\" mqtt_client.c | head -20; echo \"=== def ===\"; sed -n '/static int max_poll_timeout/,/^}/p' mqtt_client.c)",
+      "Bash(cd /c/Espressif/frameworks/esp-idf-v6.0.2/components/esp_netif; grep -n \"esp_netif_reset_ip_info\" lwip/esp_netif_lwip.c | head; echo \"---\"; sed -n '/^static void esp_netif_reset_ip_info/,/^}/p' lwip/esp_netif_lwip.c)",
+      "Read(//c/Espressif/frameworks/esp-idf-v6.0.2/components/esp_netif/**)",
+      "Bash(sed -i 's|^                 lwip_setsockopt lwip_getsockopt lwip_getsockname lwip_close$|                 lwip_setsockopt lwip_getsockopt lwip_getsockname lwip_close\\)|' CMakeLists.txt)",
+      "Bash(sed -i '/^                 lwip_fcntl lwip_select\\)$/d' CMakeLists.txt)",
+      "Bash(awk ' *)",
+      "Bash(mv /tmp/t.c wiznet_toe.c)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\lihan\\mqtt_WIZnet\\managed_components\\wiznet__wsm_driver\\third_party\\ioLibrary_Driver\\Ethernet",
+      "c:\\Users\\lihan\\mqtt_WIZnet\\managed_components\\espressif__mqtt",
+      "c:\\Users\\lihan\\mqtt_WIZnet",
+      "C:\\Users\\lihan\\mqtt_WIZnet\\build_toe_test",
+      "c:\\Users\\lihan\\mqtt_WIZnet\\main",
+      "c:\\Users\\lihan\\mqtt_WIZnet\\managed_components\\wiznet__wsm_driver\\port\\backend\\src",
+      "C:\\Users\\lihan\\mqtt_WIZnet",
+      "c:\\Users\\lihan\\mqtt_WIZnet\\lwip",
+      "C:\\Users\\lihan\\mqtt_WIZnet\\main",
+      "C:\\Users\\lihan\\mqtt_WIZnet\\build_verify"
+    ]
+  }
+}

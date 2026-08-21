@@ -131,6 +131,11 @@ menu "Example Configuration"
             the broker, and a half-open TCP connection can otherwise survive for
             minutes of retransmission.
 
+            Ignored on the TOE backend (its socket wrap rejects TCP_KEEPINTVL/
+            TCP_KEEPCNT, which esp-tls treats as a fatal connect error, so
+            app_main.c compiles the option out there). MQTT keep-alive above is
+            the liveness check on TOE.
+
     if EXAMPLE_TCP_KEEPALIVE_ENABLE
         config EXAMPLE_TCP_KEEPALIVE_IDLE_S
             int "TCP keep-alive idle (seconds)"
